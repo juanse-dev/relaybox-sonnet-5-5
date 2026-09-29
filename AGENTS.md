@@ -39,18 +39,8 @@ Do not:
 If the current specification conflicts with `README.md` or these instructions, stop and
 explain the conflict instead of silently choosing one.
 
-This benchmark is non-interactive. Do not ask the user for clarification,
-approval, confirmation, or implementation choices.
-
-If a requirement is ambiguous but multiple interpretations are compatible
-with AGENTS.md, README.md, and the current spec, choose the smallest,
-least speculative implementation that satisfies the documented behavior,
-and record any material decision in the PR.
-
-If there is a genuine contradiction between the current spec, README.md,
-and these instructions, or an external blocker makes completion impossible,
-stop and clearly report the blocker. Do not ask the user to choose between
-otherwise valid implementation options.
+If a requirement is genuinely ambiguous and materially affects behavior, ask rather
+than inventing a product decision.
 
 ## Architecture invariants
 
