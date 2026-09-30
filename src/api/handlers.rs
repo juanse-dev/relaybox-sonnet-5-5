@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::rejection::BytesRejection;
+use axum::extract::rejection::{BytesRejection, PathRejection};
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -47,6 +47,14 @@ pub async fn health() -> Json<Value> {
     Json(json!({ "status": "ok" }))
 }
 
+pub async fn route_not_found() -> ApiError {
+    ApiError::RouteNotFound
+}
+
+pub async fn method_not_allowed() -> ApiError {
+    ApiError::MethodNotAllowed
+}
+
 pub async fn create_delivery(
     State(service): State<Arc<DeliveryService>>,
     headers: HeaderMap,
@@ -54,13 +62,8 @@ pub async fn create_delivery(
 ) -> Result<Response, ApiError> {
     let idempotency_key = parse_idempotency_key(&headers)?;
 
-    let body = body.map_err(|rejection| {
-        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-            ApiError::PayloadTooLarge
-        } else {
-            ApiError::InvalidJson("Request body could not be read".to_owned())
-        }
-    })?;
+    let body =
+        body.map_err(|_| ApiError::InvalidJson("Request body could not be read".to_owned()))?;
     let (target_url, payload) = parse_body(&body)?;
 
     let outcome = service
@@ -80,8 +83,11 @@ pub async fn create_delivery(
 
 pub async fn get_delivery(
     State(service): State<Arc<DeliveryService>>,
-    Path(id): Path<String>,
+    id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<DeliveryResponse>, ApiError> {
+    // Anything that is not a valid UUID, including undecodable path segments,
+    // is simply an unknown delivery.
+    let Path(id) = id.map_err(|_| ApiError::DeliveryNotFound)?;
     let id = Uuid::parse_str(&id).map_err(|_| ApiError::DeliveryNotFound)?;
     let delivery = service.get(id).await?;
     Ok(Json(delivery.into()))

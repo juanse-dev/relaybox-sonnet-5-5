@@ -9,12 +9,13 @@ use crate::domain::DomainError;
 #[derive(Debug)]
 pub enum ApiError {
     InvalidJson(String),
-    PayloadTooLarge,
     InvalidIdempotencyKey(String),
     InvalidRequest(String),
     InvalidTargetUrl(String),
     IdempotencyConflict,
     DeliveryNotFound,
+    RouteNotFound,
+    MethodNotAllowed,
     Internal,
 }
 
@@ -22,11 +23,6 @@ impl ApiError {
     fn parts(&self) -> (StatusCode, &'static str, String) {
         match self {
             Self::InvalidJson(msg) => (StatusCode::BAD_REQUEST, "invalid_json", msg.clone()),
-            Self::PayloadTooLarge => (
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "payload_too_large",
-                "Request body is too large".to_owned(),
-            ),
             Self::InvalidIdempotencyKey(msg) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_idempotency_key",
@@ -52,6 +48,16 @@ impl ApiError {
                 StatusCode::NOT_FOUND,
                 "delivery_not_found",
                 "Delivery not found".to_owned(),
+            ),
+            Self::RouteNotFound => (
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "Route not found".to_owned(),
+            ),
+            Self::MethodNotAllowed => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "method_not_allowed",
+                "Method not allowed for this route".to_owned(),
             ),
             Self::Internal => (
                 StatusCode::INTERNAL_SERVER_ERROR,

@@ -445,3 +445,87 @@ async fn concurrent_same_key_requests_create_exactly_one_delivery() {
     assert_eq!(ids.len(), 1, "all requests observe the same delivery");
     assert_eq!(row_count(&app.pool).await, 1);
 }
+
+#[tokio::test]
+async fn huge_and_high_precision_numbers_round_trip_exactly() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+
+    let body = concat!(
+        r#"{"target_url":"https://example.test/","payload":"#,
+        r#"{"big":123456789012345678901234567890,"tiny":1e-400,"huge":1e+400,"#,
+        r#""precise":0.1000000000000000055511151231257827}}"#
+    );
+    let (status, created) = send(&app.router, post_raw(Some("k"), body)).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+
+    let path = format!("/v1/deliveries/{}", created["id"].as_str().unwrap());
+    let (status, fetched) = send(&app.router, get(&path)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fetched, created);
+    assert_eq!(
+        fetched["payload"].to_string(),
+        r#"{"big":123456789012345678901234567890,"huge":1e+400,"precise":0.1000000000000000055511151231257827,"tiny":1e-400}"#
+    );
+
+    let (status, replayed) = send(&app.router, post_raw(Some("k"), body)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replayed["id"], created["id"]);
+
+    let neighbour = body.replace(
+        "123456789012345678901234567890",
+        "123456789012345678901234567891",
+    );
+    let (status, conflict) = send(&app.router, post_raw(Some("k"), neighbour)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_error(&conflict, "idempotency_conflict");
+}
+
+#[tokio::test]
+async fn request_bodies_larger_than_axum_default_limit_are_accepted() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+
+    let filler = "x".repeat(3 * 1024 * 1024);
+    let request = json!({"target_url": "https://example.test/", "payload": {"blob": filler}});
+    let (status, created) = send(&app.router, post("big", &request)).await;
+
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+    assert_eq!(
+        created["payload"]["blob"].as_str().unwrap().len(),
+        filler.len()
+    );
+}
+
+#[tokio::test]
+async fn unknown_routes_and_methods_use_json_error_shape() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+
+    let (status, body) = send(&app.router, get("/nope")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_error(&body, "not_found");
+
+    let delete = Request::builder()
+        .method(Method::DELETE)
+        .uri("/v1/deliveries")
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = send(&app.router, delete).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_error(&body, "method_not_allowed");
+
+    let (status, body) = send(&app.router, get("/v1/deliveries")).await;
+    assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_error(&body, "method_not_allowed");
+}
+
+#[tokio::test]
+async fn undecodable_path_segment_is_delivery_not_found() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+
+    let (status, body) = send(&app.router, get("/v1/deliveries/%FF")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_error(&body, "delivery_not_found");
+}
