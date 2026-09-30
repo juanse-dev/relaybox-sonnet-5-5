@@ -529,3 +529,48 @@ async fn undecodable_path_segment_is_delivery_not_found() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_error(&body, "delivery_not_found");
 }
+
+fn post_with_key_bytes(key: &[u8], body: &Value) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri("/v1/deliveries")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(
+            "Idempotency-Key",
+            header::HeaderValue::from_bytes(key).unwrap(),
+        )
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn non_utf8_idempotency_keys_are_accepted_and_kept_distinct() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+
+    let padded = [b' ', 0xFF, b'k', b'e', b'y', b' '];
+    let trimmed = [0xFF, b'k', b'e', b'y'];
+    let other_key = [0xFE, b'k', b'e', b'y'];
+
+    let (status, created) = send(&app.router, post_with_key_bytes(&padded, &sample())).await;
+    assert_eq!(status, StatusCode::CREATED, "body: {created}");
+
+    // Same bytes after trimming replay the same delivery.
+    let (status, replayed) = send(&app.router, post_with_key_bytes(&trimmed, &sample())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replayed, created);
+
+    // A different non-UTF-8 key is a different delivery.
+    let (status, other) = send(&app.router, post_with_key_bytes(&other_key, &sample())).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_ne!(other["id"], created["id"]);
+
+    // The 128-byte limit applies to raw bytes.
+    let (status, body) = send(&app.router, post_with_key_bytes(&[0xFF; 129], &sample())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_error(&body, "invalid_idempotency_key");
+    let (status, _) = send(&app.router, post_with_key_bytes(&[0xFF; 128], &sample())).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    assert_eq!(row_count(&app.pool).await, 3);
+}

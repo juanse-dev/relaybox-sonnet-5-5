@@ -23,7 +23,12 @@ pub enum SaveOutcome {
     /// The delivery was inserted.
     Created(Delivery),
     /// A delivery already existed for the idempotency key; nothing was written.
-    Existing(Delivery),
+    /// The candidate that was not stored is handed back so callers can compare
+    /// it with `existing` without keeping a second copy of the payload alive.
+    Existing {
+        existing: Delivery,
+        requested: Delivery,
+    },
 }
 
 #[async_trait]

@@ -106,7 +106,7 @@ impl DeliveryRepository for SqliteDeliveryRepository {
              ON CONFLICT(idempotency_key) DO NOTHING",
         )
         .bind(delivery.id.to_string())
-        .bind(idempotency_key.as_str())
+        .bind(idempotency_key.as_bytes())
         .bind(delivery.target_url.as_str())
         .bind(payload)
         .bind(delivery.status.as_str())
@@ -127,13 +127,16 @@ impl DeliveryRepository for SqliteDeliveryRepository {
         let row = sqlx::query(&format!(
             "SELECT {SELECT_COLUMNS} FROM deliveries WHERE idempotency_key = ?"
         ))
-        .bind(idempotency_key.as_str())
+        .bind(idempotency_key.as_bytes())
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?
         .ok_or_else(|| corrupt("idempotency_key", "conflicting row disappeared"))?;
 
-        Ok(SaveOutcome::Existing(delivery_from_row(&row)?))
+        Ok(SaveOutcome::Existing {
+            existing: delivery_from_row(&row)?,
+            requested: delivery,
+        })
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Delivery>, RepositoryError> {

@@ -55,12 +55,8 @@ impl DeliveryService {
         // Persisted with microsecond precision so every read returns exactly
         // the timestamp that was returned on creation.
         let created_at = Utc::now().trunc_subsecs(6);
-        let delivery = Delivery::new_pending(
-            Uuid::new_v4(),
-            target_url.clone(),
-            command.payload.clone(),
-            created_at,
-        );
+        let delivery =
+            Delivery::new_pending(Uuid::new_v4(), target_url, command.payload, created_at);
 
         let outcome = self
             .repository
@@ -72,12 +68,16 @@ impl DeliveryService {
 
         match outcome {
             SaveOutcome::Created(delivery) => Ok(EnqueueOutcome::Created(delivery)),
-            SaveOutcome::Existing(existing)
-                if existing.same_content(&target_url, &command.payload) =>
-            {
-                Ok(EnqueueOutcome::Replayed(existing))
+            SaveOutcome::Existing {
+                existing,
+                requested,
+            } => {
+                if existing.same_content(&requested.target_url, &requested.payload) {
+                    Ok(EnqueueOutcome::Replayed(existing))
+                } else {
+                    Err(EnqueueError::IdempotencyConflict)
+                }
             }
-            SaveOutcome::Existing(_) => Err(EnqueueError::IdempotencyConflict),
         }
     }
 

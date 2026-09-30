@@ -62,9 +62,13 @@ pub async fn create_delivery(
 ) -> Result<Response, ApiError> {
     let idempotency_key = parse_idempotency_key(&headers)?;
 
-    let body =
-        body.map_err(|_| ApiError::InvalidJson("Request body could not be read".to_owned()))?;
-    let (target_url, payload) = parse_body(&body)?;
+    // The raw body is dropped as soon as it is parsed; it must not stay alive
+    // across the repository await.
+    let (target_url, payload) = {
+        let body =
+            body.map_err(|_| ApiError::InvalidJson("Request body could not be read".to_owned()))?;
+        parse_body(&body)?
+    };
 
     let outcome = service
         .enqueue(EnqueueDelivery {
@@ -103,10 +107,7 @@ fn parse_idempotency_key(headers: &HeaderMap) -> Result<IdempotencyKey, ApiError
             "Idempotency-Key header must be provided once".to_owned(),
         ));
     }
-    let raw = std::str::from_utf8(value.as_bytes()).map_err(|_| {
-        ApiError::InvalidIdempotencyKey("Idempotency-Key must be valid UTF-8".to_owned())
-    })?;
-    Ok(IdempotencyKey::parse(raw)?)
+    Ok(IdempotencyKey::parse(value.as_bytes())?)
 }
 
 /// Splits the request body into `target_url` and `payload`. Malformed JSON is

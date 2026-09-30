@@ -18,22 +18,25 @@ pub enum DomainError {
 }
 
 /// A validated, normalized (trimmed) idempotency key.
+///
+/// HTTP header values are opaque bytes, so the key is kept as bytes and is not
+/// required to be UTF-8.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IdempotencyKey(String);
+pub struct IdempotencyKey(Vec<u8>);
 
 impl IdempotencyKey {
-    pub fn parse(raw: &str) -> Result<Self, DomainError> {
-        let trimmed = raw.trim_matches(|c: char| c.is_ascii_whitespace());
+    pub fn parse(raw: impl AsRef<[u8]>) -> Result<Self, DomainError> {
+        let trimmed = raw.as_ref().trim_ascii();
         if trimmed.is_empty() {
             return Err(DomainError::EmptyIdempotencyKey);
         }
         if trimmed.len() > MAX_IDEMPOTENCY_KEY_BYTES {
             return Err(DomainError::IdempotencyKeyTooLong);
         }
-        Ok(Self(trimmed.to_owned()))
+        Ok(Self(trimmed.to_vec()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
 }
@@ -119,7 +122,13 @@ mod tests {
     #[test]
     fn idempotency_key_is_trimmed() {
         let key = IdempotencyKey::parse(" \t abc \r\n").unwrap();
-        assert_eq!(key.as_str(), "abc");
+        assert_eq!(key.as_bytes(), b"abc");
+    }
+
+    #[test]
+    fn idempotency_key_accepts_non_utf8_bytes() {
+        let key = IdempotencyKey::parse([b' ', 0xFF, 0xFE, b'k', b' ']).unwrap();
+        assert_eq!(key.as_bytes(), [0xFF, 0xFE, b'k']);
     }
 
     #[test]
@@ -136,17 +145,17 @@ mod tests {
 
     #[test]
     fn idempotency_key_length_limit_is_in_bytes() {
-        assert!(IdempotencyKey::parse(&"a".repeat(128)).is_ok());
+        assert!(IdempotencyKey::parse("a".repeat(128)).is_ok());
         assert_eq!(
-            IdempotencyKey::parse(&"a".repeat(129)),
+            IdempotencyKey::parse("a".repeat(129)),
             Err(DomainError::IdempotencyKeyTooLong)
         );
         // 65 two-byte characters = 130 bytes but only 65 chars.
         assert_eq!(
-            IdempotencyKey::parse(&"é".repeat(65)),
+            IdempotencyKey::parse("é".repeat(65)),
             Err(DomainError::IdempotencyKeyTooLong)
         );
-        assert!(IdempotencyKey::parse(&"é".repeat(64)).is_ok());
+        assert!(IdempotencyKey::parse("é".repeat(64)).is_ok());
     }
 
     #[test]
