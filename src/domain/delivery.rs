@@ -49,7 +49,7 @@ impl TargetUrl {
     pub fn parse(raw: &str) -> Result<Self, DomainError> {
         let url = Url::parse(raw).map_err(|_| DomainError::InvalidTargetUrl)?;
         let has_host = url.host_str().is_some_and(|host| !host.is_empty());
-        if !matches!(url.scheme(), "http" | "https") || !has_host {
+        if !matches!(url.scheme(), "http" | "https") || !has_host || !has_explicit_authority(raw) {
             return Err(DomainError::InvalidTargetUrl);
         }
         Ok(Self(raw.to_owned()))
@@ -58,6 +58,21 @@ impl TargetUrl {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// The WHATWG parser used by `url` is lenient for special schemes: it skips extra
+/// slashes, so `https:///path` parses with host `path`, and `http:host` is accepted
+/// without `//`. The host must come from an explicit `//authority` in the input itself.
+fn has_explicit_authority(raw: &str) -> bool {
+    let Some((_, rest)) = raw.split_once(':') else {
+        return false;
+    };
+    let mut chars = rest.chars().filter(|c| !matches!(c, '\t' | '\n' | '\r'));
+    chars.next() == Some('/')
+        && chars.next() == Some('/')
+        && chars
+            .next()
+            .is_some_and(|c| !matches!(c, '/' | '\\' | '?' | '#'))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +179,9 @@ mod tests {
             "https://example.test/webhooks",
             "http://example.test",
             "HTTP://Example.TEST:8080/a?b=c",
+            "https://user:pass@example.test/hook",
+            "http://[::1]:3000/hook",
+            "http://127.0.0.1/",
         ] {
             assert_eq!(TargetUrl::parse(raw).unwrap().as_str(), raw);
         }
@@ -180,6 +198,16 @@ mod tests {
             "file:///etc/passwd",
             "http://",
             "http:///",
+            "https:///path",
+            "https:////path",
+            "https:///",
+            "http:///example.test/webhooks",
+            "https://?q=1",
+            "https://#frag",
+            "https:\\\\\\path",
+            "https:/example.test/webhooks",
+            "https:example.test/webhooks",
+            "https://\t/path",
         ] {
             assert_eq!(
                 TargetUrl::parse(raw),
