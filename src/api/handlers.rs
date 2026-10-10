@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::SecondsFormat;
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -26,6 +26,9 @@ pub struct DeliveryResponse {
     target_url: String,
     payload: Value,
     created_at: String,
+    next_attempt_at: Option<String>,
+    last_error: Option<String>,
+    delivered_at: Option<String>,
 }
 
 impl From<Delivery> for DeliveryResponse {
@@ -36,11 +39,16 @@ impl From<Delivery> for DeliveryResponse {
             attempts: delivery.attempts,
             target_url: delivery.target_url.as_str().to_owned(),
             payload: delivery.payload,
-            created_at: delivery
-                .created_at
-                .to_rfc3339_opts(SecondsFormat::Micros, true),
+            created_at: format_time(delivery.created_at),
+            next_attempt_at: delivery.next_attempt_at.map(format_time),
+            last_error: delivery.last_error,
+            delivered_at: delivery.delivered_at.map(format_time),
         }
     }
+}
+
+fn format_time(time: DateTime<Utc>) -> String {
+    time.to_rfc3339_opts(SecondsFormat::Micros, true)
 }
 
 pub async fn health() -> Json<Value> {

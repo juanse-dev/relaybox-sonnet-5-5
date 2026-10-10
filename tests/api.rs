@@ -5,7 +5,7 @@ use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
-use relaybox::application::DeliveryService;
+use relaybox::application::{ClaimRequest, ClaimToken, DeliveryQueue, DeliveryService};
 use relaybox::infrastructure::{connect, SqliteDeliveryRepository};
 use serde_json::{json, Value};
 use sqlx::SqlitePool;
@@ -115,6 +115,9 @@ async fn new_request_creates_pending_delivery() {
     assert_eq!(body["attempts"], 0);
     assert_eq!(body["target_url"], "https://example.test/webhooks");
     assert_eq!(body["payload"], sample()["payload"]);
+    assert_eq!(body["next_attempt_at"], Value::Null);
+    assert_eq!(body["last_error"], Value::Null);
+    assert_eq!(body["delivered_at"], Value::Null);
     let created_at = body["created_at"].as_str().unwrap();
     assert!(created_at.ends_with('Z'), "UTC timestamp: {created_at}");
     assert!(chrono::DateTime::parse_from_rfc3339(created_at).is_ok());
@@ -395,6 +398,57 @@ async fn deliveries_and_idempotency_survive_restart() {
     assert_eq!(status, StatusCode::CONFLICT);
     assert_error(&body, "idempotency_conflict");
     assert_eq!(row_count(&app.pool).await, 1);
+}
+
+#[tokio::test]
+async fn worker_state_is_exposed_by_get() {
+    let dir = TempDir::new().unwrap();
+    let app = start(dir.path()).await;
+    let repository = SqliteDeliveryRepository::new(app.pool.clone());
+    let (_, created) = send(&app.router, post("key-1", &sample())).await;
+    let id: uuid::Uuid = created["id"].as_str().unwrap().parse().unwrap();
+    let now = chrono::SubsecRound::trunc_subsecs(chrono::Utc::now(), 6);
+    let claim = |expires: i64| ClaimRequest {
+        token: ClaimToken(uuid::Uuid::new_v4()),
+        now,
+        lease_expires_at: now + chrono::TimeDelta::seconds(expires),
+    };
+
+    let first = claim(30);
+    repository.claim_next(first).await.unwrap().unwrap();
+    let (_, body) = send(&app.router, get(&format!("/v1/deliveries/{id}"))).await;
+    assert_eq!(body["status"], "in_flight");
+    assert_eq!(body["attempts"], 1);
+
+    let retry_at = now + chrono::TimeDelta::seconds(1);
+    assert!(repository
+        .mark_failed(id, first.token, "connection failed", retry_at)
+        .await
+        .unwrap());
+    let (_, body) = send(&app.router, get(&format!("/v1/deliveries/{id}"))).await;
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["last_error"], "connection failed");
+    let next = chrono::DateTime::parse_from_rfc3339(body["next_attempt_at"].as_str().unwrap());
+    assert_eq!(next.unwrap(), retry_at);
+    assert_eq!(body["delivered_at"], Value::Null);
+
+    let second = claim(30);
+    let later = ClaimRequest {
+        now: retry_at,
+        ..second
+    };
+    repository.claim_next(later).await.unwrap().unwrap();
+    assert!(repository
+        .mark_delivered(id, second.token, retry_at)
+        .await
+        .unwrap());
+    let (_, body) = send(&app.router, get(&format!("/v1/deliveries/{id}"))).await;
+    assert_eq!(body["status"], "delivered");
+    assert_eq!(body["attempts"], 2);
+    assert_eq!(body["last_error"], Value::Null);
+    assert_eq!(body["next_attempt_at"], Value::Null);
+    let delivered = chrono::DateTime::parse_from_rfc3339(body["delivered_at"].as_str().unwrap());
+    assert_eq!(delivered.unwrap(), retry_at);
 }
 
 #[tokio::test]
