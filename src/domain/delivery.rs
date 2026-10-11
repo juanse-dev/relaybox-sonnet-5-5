@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use thiserror::Error;
@@ -78,21 +80,37 @@ fn has_explicit_authority(raw: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryStatus {
     Pending,
+    InFlight,
+    Delivered,
 }
 
 impl DeliveryStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",
+            Self::InFlight => "in_flight",
+            Self::Delivered => "delivered",
         }
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw {
             "pending" => Some(Self::Pending),
+            "in_flight" => Some(Self::InFlight),
+            "delivered" => Some(Self::Delivered),
             _ => None,
         }
     }
+}
+
+/// Upper bound for the delay between two attempts.
+pub const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+
+/// Delay before the next attempt after attempt number `failed_attempt`
+/// (1-based) failed: 1s, 2s, 4s, ... capped at [`MAX_RETRY_DELAY`].
+pub fn retry_delay(failed_attempt: u32) -> Duration {
+    let exponent = failed_attempt.saturating_sub(1).min(6);
+    Duration::from_secs(1u64 << exponent).min(MAX_RETRY_DELAY)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,6 +121,11 @@ pub struct Delivery {
     pub target_url: TargetUrl,
     pub payload: Value,
     pub created_at: DateTime<Utc>,
+    /// When a pending delivery becomes due after a failed attempt. `None` means
+    /// it has never failed (due immediately) or is no longer scheduled.
+    pub next_attempt_at: Option<DateTime<Utc>>,
+    pub last_error: Option<String>,
+    pub delivered_at: Option<DateTime<Utc>>,
 }
 
 impl Delivery {
@@ -119,6 +142,9 @@ impl Delivery {
             target_url,
             payload,
             created_at,
+            next_attempt_at: None,
+            last_error: None,
+            delivered_at: None,
         }
     }
 
@@ -215,6 +241,26 @@ mod tests {
                 "{raw:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn status_round_trips_through_text() {
+        for status in [
+            DeliveryStatus::Pending,
+            DeliveryStatus::InFlight,
+            DeliveryStatus::Delivered,
+        ] {
+            assert_eq!(DeliveryStatus::parse(status.as_str()), Some(status));
+        }
+        assert_eq!(DeliveryStatus::parse("failed"), None);
+    }
+
+    #[test]
+    fn retry_delay_doubles_and_is_capped() {
+        let secs: Vec<u64> = (1..=10).map(|n| retry_delay(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 32, 60, 60, 60, 60]);
+        assert_eq!(retry_delay(u32::MAX), MAX_RETRY_DELAY);
+        assert_eq!(retry_delay(0), Duration::from_secs(1));
     }
 
     #[test]
